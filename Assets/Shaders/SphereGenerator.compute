@@ -1,0 +1,27 @@
+﻿#pragma kernel SphereGenerator
+
+RWStructuredBuffer<float3> vertices;
+RWStructuredBuffer<float3> normals;
+
+static const float PI = 3.14159265;
+static const float RADIUS = 0.2;
+static const int NB_LAT = 16;
+static const int NB_LONG = 24;
+
+[numthreads(16, 25, 1)]
+void SphereGenerator(uint3 id : SV_DispatchThreadID) {
+    int lat = id.x;
+    int long = id.y;
+
+    float a1 = PI * (float)(lat + 1) / (NB_LAT + 1);
+    float sin1 = sin(a1);
+    float cos1 = cos(a1);
+
+    float a2 = 2.0 * PI * (float)(long == NB_LONG ? 0 : long) / NB_LONG;
+    float sin2 = sin(a2);
+    float cos2 = cos(a2);
+
+    uint idx = long + lat * (NB_LONG + 1) + 1;
+    vertices[idx] = float3(sin1 * cos2, cos1, sin1 * sin2) * RADIUS;
+    normals[idx] = normalize(vertices[idx]);
+}

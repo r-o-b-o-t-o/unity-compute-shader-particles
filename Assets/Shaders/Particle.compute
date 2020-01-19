@@ -1,0 +1,139 @@
+﻿#pragma kernel UpdateParticle
+
+struct Particle {
+    float3 position;
+    float3 prevPos;
+    float3 acceleration;
+    float3 velocity;
+    float health;
+    float decayRate;
+    float4 color;
+};
+
+struct Sphere {
+    float3 pos;
+    float radius;
+};
+
+struct Plane {
+    float3 p;
+    float3 n;
+};
+
+struct Box {
+    float3 minimum;
+    float3 maximum;
+};
+
+RWStructuredBuffer<Particle> particles;
+RWStructuredBuffer<Box> boxes;
+RWStructuredBuffer<Plane> planes;
+float randSeed;
+float deltaTime;
+
+uint Hash(uint s) {
+    // Hash function from H. Schechter & R. Bridson, goo.gl/RXiKaH
+    s ^= 2747636419u;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    return s;
+}
+
+float Random(uint seed) {
+    return float(Hash(seed)) / 4294967295.0; // 2^32-1
+}
+
+bool CollisionSpherePlane(Sphere sphere, Plane plane) {
+    float dist = dot((sphere.pos - plane.p), plane.n);
+    return dist > 0.0 && dist < sphere.radius;
+}
+
+void Rebound(int particleIdx, Plane plane) {
+    particles[particleIdx].position = particles[particleIdx].prevPos;
+
+    float restitution = 0.65;
+    float3 d = dot(particles[particleIdx].velocity, plane.n);
+    float3 f = -plane.n * (1.0 + restitution) * d;
+    particles[particleIdx].velocity += f;
+}
+
+[numthreads(16, 16, 1)]
+void UpdateParticle(uint3 id : SV_DispatchThreadID) {
+    int idx = id.x + id.y * 32;
+
+    particles[idx].health -= 0.005 * particles[idx].decayRate;
+    particles[idx].color.a = particles[idx].health;
+    float3 oldVelocity = particles[idx].velocity;
+    particles[idx].velocity += particles[idx].acceleration * deltaTime;
+    particles[idx].prevPos = particles[idx].position;
+    particles[idx].position += (oldVelocity + particles[idx].velocity) * 0.5 * deltaTime;
+
+    Sphere sphere;
+    sphere.pos = particles[idx].position;
+    sphere.radius = 0.2;
+
+    // Collisions with planes
+    uint n;
+    uint stride;
+    planes.GetDimensions(n, stride);
+    for (uint planeIdx; planeIdx < n; ++planeIdx) {
+        Plane plane = planes[planeIdx];
+        if (CollisionSpherePlane(sphere, plane)) {
+            Rebound(idx, plane);
+        }
+    }
+
+    // Collisions with boxes
+    boxes.GetDimensions(n, stride);
+    for (uint boxIdx; boxIdx < n; ++boxIdx) {
+        Box box = boxes[boxIdx];
+        float3 closest = float3(
+            max(box.minimum.x, min(sphere.pos.x, box.maximum.x)),
+            max(box.minimum.y, min(sphere.pos.y, box.maximum.y)),
+            max(box.minimum.z, min(sphere.pos.z, box.maximum.z))
+        );
+        bool collision = distance(closest, sphere.pos) < sphere.radius;
+        if (collision) {
+            float3 boxCenter = (box.minimum + box.maximum) / 2.0;
+            float3 size = box.maximum - box.minimum;
+            float3 normal = normalize((closest - boxCenter) / size);
+            if (abs(normal.x) > abs(normal.z)) {
+                if (abs(normal.x) > abs(normal.y)) {
+                    normal = normal.x < 0 ? float3(-1, 0, 0) : float3(1, 0, 0);
+                } else if (abs(normal.y) > abs(normal.x)) {
+                    normal = normal.y < 0 ? float3(0, -1, 0) : float3(0, 1, 0);
+                } else {
+                    normal = normalize(float3(normal.x < 0 ? -1 : 1, normal.y < 0 ? -1 : 1, 0));
+                }
+            } else if (abs(normal.z) > abs(normal.x)) {
+                if (abs(normal.y) > abs(normal.z)) {
+                    normal = normal.y < 0 ? float3(0, -1, 0) : float3(0, 1, 0);
+                } else if (abs(normal.z) > abs(normal.y)) {
+                    normal = normal.z < 0 ? float3(0, 0, -1) : float3(0, 0, 1);
+                } else {
+                    normal = normalize(float3(0, normal.y < 0 ? -1 : 1, normal.z < 0 ? -1 : 1));
+                }
+            } else {
+                normal = normalize(float3(normal.x < 0 ? -1 : 1, 0, normal.z < 0 ? -1 : 1));
+            }
+
+            Plane plane;
+            plane.p = closest;
+            plane.n = normal;
+            Rebound(idx, plane);
+        }
+    }
+
+    if (particles[idx].health <= 0.0) {
+        // Respawn
+        particles[idx].health = 1.0;
+        particles[idx].acceleration = float3(0.0, -9.81, 0.0);
+        particles[idx].velocity = float3((Random(id.x * id.y * randSeed) - 0.5) * 8.0, (Random((id.x + id.y) * randSeed) + 1.0) * 5.0, (Random(id.x * randSeed + id.y) - 0.5) * 8.0);
+        particles[idx].position = float3(0.0, 5.0, 0.0);
+        particles[idx].decayRate = Random((idx + 1) * randSeed) + 0.5;
+        particles[idx].color = float4(Random(id.x * id.y * randSeed), Random((id.x + id.y) * randSeed), Random(id.x * randSeed + id.y), 1.0);
+    }
+}
